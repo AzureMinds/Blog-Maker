@@ -40,9 +40,8 @@ A desktop tool that transforms your documents into well-crafted articles using o
 1. **Launch the application** by running `streamlit run app.py`
 2. **Configure your settings** in the sidebar:
    - **Choose LLM Backend**: 
-     - Check "Use Ollama" for free local processing (recommended)
-     - Or use Hugging Face models for cloud-based processing
-   - **Select Model**: Choose from available Ollama models or HF models
+     - Check "Use Ollama" for free local processing (recommended) - only option currently
+   - **Select Model**: Choose from available Ollama models
    - Click "Initialize Generator"
 3. **Learn your writing style** (optional but recommended):
    - Create a folder with your past articles (text, markdown, or HTML files)
@@ -92,7 +91,6 @@ Blog Maker/
 ├── app.py                 # Main Streamlit application
 ├── article_generator.py   # Core article generation logic
 ├── document_processor.py  # Document text extraction
-├── llm_processor.py      # LLM integration and processing
 ├── style_analyzer.py     # Writing style analysis
 ├── config.py             # Configuration settings
 ├── requirements.txt      # Python dependencies

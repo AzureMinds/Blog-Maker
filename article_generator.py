@@ -17,7 +17,10 @@ class ArticleGenerator:
     
     def __init__(self, llm_model: str = None, device: str = "auto"):
         self.document_processor = DocumentProcessor(config.processing.supported_formats)        
-        self.llm_processor = OllamaProcessor(model_name=llm_model or config.llm.model_name)
+        self.llm_processor = OllamaProcessor(
+            model_name=llm_model or config.llm.model_name,
+            check_connection=False  # Don't check on init
+        )
         
         self.style_analyzer = StyleAnalyzer()
         self.style_profile = {}

@@ -9,43 +9,106 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
+# Module-level singleton for SentenceTransformer
+_sentence_model_cache = None
+_sentence_model_name = 'all-MiniLM-L6-v2'
+
+def _get_sentence_model():
+    """Lazy-load and cache the SentenceTransformer instance."""
+    global _sentence_model_cache
+    if _sentence_model_cache is None:
+        _sentence_model_cache = SentenceTransformer(_sentence_model_name)
+    return _sentence_model_cache
+
 class OllamaProcessor:
     """Handles LLM operations using Ollama for local processing."""
     
-    def __init__(self, model_name: str = "llama3.2:3b"):
+    def __init__(self, model_name: str = "llama3.2:3b", check_connection: bool = False):
         self.model_name = model_name
-        self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-        self._check_ollama_connection()
+        self._sentence_model = None  # Will be lazy-loaded when needed
+        if check_connection:
+            self._check_ollama_connection()
+    
+    @property
+    def sentence_model(self):
+        """Lazy-load the sentence model on first access."""
+        if self._sentence_model is None:
+            self._sentence_model = _get_sentence_model()
+        return self._sentence_model
+    
+    def check_ollama_health(self) -> Dict[str, Any]:
+        """Lightweight health check that lists available models without pulling."""
+        try:
+            models = ollama.list()
+            available_models = [model['name'] for model in models['models']]
+            model_available = self.model_name in available_models
+            
+            return {
+                "connected": True,
+                "model_available": model_available,
+                "available_models": available_models,
+                "selected_model": self.model_name
+            }
+        except Exception as e:
+            return {
+                "connected": False,
+                "error": str(e),
+                "available_models": [],
+                "selected_model": self.model_name
+            }
+    
+    def pull_model(self, model_name: str = None) -> Dict[str, Any]:
+        """Pull a model from Ollama. Returns status dict."""
+        model_to_pull = model_name or self.model_name
+        try:
+            health = self.check_ollama_health()
+            if not health["connected"]:
+                return {
+                    "success": False,
+                    "error": "Ollama is not running. Please start it with 'ollama serve'"
+                }
+            
+            if model_to_pull in health["available_models"]:
+                return {
+                    "success": True,
+                    "message": f"Model {model_to_pull} is already available",
+                    "model": model_to_pull
+                }
+            
+            # Pull the model
+            ollama.pull(model_to_pull)
+            self.model_name = model_to_pull
+            
+            return {
+                "success": True,
+                "message": f"Successfully pulled {model_to_pull}",
+                "model": model_to_pull
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "model": model_to_pull
+            }
     
     def _check_ollama_connection(self):
         """Check if Ollama is running and the model is available."""
-        try:
-            # Check if Ollama is running
-            models = ollama.list()
-            available_models = [model['name'] for model in models['models']]
-            
-            if self.model_name not in available_models:
-                print(f"Model {self.model_name} not found. Available models: {available_models}")
-                print(f"Attempting to pull {self.model_name}...")
-                try:
-                    ollama.pull(self.model_name)
-                    print(f"Successfully pulled {self.model_name}")
-                except Exception as e:
-                    print(f"Error pulling model: {e}")
-                    # Fallback to first available model
-                    if available_models:
-                        self.model_name = available_models[0]
-                        print(f"Using fallback model: {self.model_name}")
-                    else:
-                        raise Exception("No models available in Ollama")
-            
-            print(f"Using Ollama model: {self.model_name}")
-            
-        except Exception as e:
-            print(f"Error connecting to Ollama: {e}")
-            print("Make sure Ollama is running: ollama serve")
-            raise
+        health = self.check_ollama_health()
         
+        if not health["connected"]:
+            raise Exception(f"Ollama is not running: {health.get('error', 'Unknown error')}. Make sure Ollama is running: ollama serve")
+        
+        if not health["model_available"]:
+            available = health["available_models"]
+            error_msg = f"Model {self.model_name} not found. Available models: {available}"
+            if available:
+                error_msg += f"\nPlease pull the model manually or use an available model."
+            else:
+                error_msg += "\nNo models available. Please pull a model first."
+            raise Exception(error_msg)
+        
+        print(f"Using Ollama model: {self.model_name}")
+               
     def summarize_text(self, text: str, max_length: int = 150) -> str:
         """Summarize a given text using Ollama."""
         try:

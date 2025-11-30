@@ -6,10 +6,11 @@ import os
 from pathlib import Path
 import json
 from datetime import datetime
-
 from article_generator import ArticleGenerator
 from ollama_processor import OllamaProcessor
 from config import config
+import threading
+import time
 
 # Page configuration
 st.set_page_config(
@@ -60,6 +61,29 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def check_ollama_health_async(processor, status_container):
+    """Check Ollama health asynchronously and update UI."""
+    health = processor.check_ollama_health()
+    status_container.empty()
+    
+    if health["connected"]:
+        if health["model_available"]:
+            status_container.success(f"✅ Connected to Ollama. Model '{health['selected_model']}' is available.")
+        else:
+            status_container.warning(f"⚠️ Connected to Ollama, but model '{health['selected_model']}' is not available.")
+            status_container.info(f"Available models: {', '.join(health['available_models']) if health['available_models'] else 'None'}")
+            if st.button(f"Pull Model '{health['selected_model']}'", key="pull_model_btn"):
+                with st.spinner(f"Pulling model {health['selected_model']}... This may take a few minutes."):
+                    result = processor.pull_model()
+                    if result["success"]:
+                        st.success(result["message"])
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {result['error']}")
+    else:
+        status_container.error(f"❌ Cannot connect to Ollama: {health.get('error', 'Unknown error')}")
+        status_container.info("Make sure Ollama is running: `ollama serve`")
+
 def main():
     """Main application function."""
     
@@ -74,6 +98,10 @@ def main():
         st.session_state.style_loaded = False
     if 'ollama_models' not in st.session_state:
         st.session_state.ollama_models = []
+    if 'ollama_processor' not in st.session_state:
+        st.session_state.ollama_processor = None
+    if 'health_check_done' not in st.session_state:
+        st.session_state.health_check_done = False
     
     # Sidebar
     with st.sidebar:
@@ -85,15 +113,41 @@ def main():
         # Ollama model selection
         st.subheader("Ollama Model")
         
+        # Initialize processor without connection check
+        if st.session_state.ollama_processor is None:
+            try:
+                st.session_state.ollama_processor = OllamaProcessor(
+                    model_name=config.llm.model_name,
+                    check_connection=False
+                )
+            except Exception as e:
+                st.error(f"Error creating processor: {e}")
+        
+        # Health check section
+        health_status = st.container()
+        
+        if st.button("Check Ollama Status", key="check_health"):
+            with st.spinner("Checking Ollama connection..."):
+                check_ollama_health_async(st.session_state.ollama_processor, health_status)
+                st.session_state.health_check_done = True
+        
+        # Auto-check on first load
+        if not st.session_state.health_check_done and st.session_state.ollama_processor:
+            with st.spinner("Checking Ollama connection..."):
+                check_ollama_health_async(st.session_state.ollama_processor, health_status)
+                st.session_state.health_check_done = True
+        
         # Get available Ollama models
         if st.button("Refresh Ollama Models"):
-            try:
-                ollama_processor = OllamaProcessor()
-                st.session_state.ollama_models = ollama_processor.get_available_models()
-                st.success("Ollama models refreshed!")
-            except Exception as e:
-                st.error(f"Error connecting to Ollama: {e}")
-                st.info("Make sure Ollama is running: `ollama serve`")
+            if st.session_state.ollama_processor:
+                with st.spinner("Fetching available models..."):
+                    health = st.session_state.ollama_processor.check_ollama_health()
+                    if health["connected"]:
+                        st.session_state.ollama_models = health["available_models"]
+                        st.success("Ollama models refreshed!")
+                    else:
+                        st.error(f"Error connecting to Ollama: {health.get('error', 'Unknown error')}")
+                        st.info("Make sure Ollama is running: `ollama serve`")
         
         # Default Ollama models if none loaded
         if not st.session_state.ollama_models:
@@ -111,17 +165,43 @@ def main():
             help="Select the Ollama model for article generation"
         )
         
+        # Update processor model name if changed
+        if st.session_state.ollama_processor and st.session_state.ollama_processor.model_name != selected_model:
+            st.session_state.ollama_processor.model_name = selected_model
+        
         # Initialize generator with Ollama
         if st.button("Initialize Ollama Generator", type="primary"):
-            with st.spinner("Connecting to Ollama..."):
-                try:
-                    st.session_state.article_generator = ArticleGenerator(
-                        llm_model=selected_model
-                    )
-                    st.success("Ollama generator initialized successfully!")
-                except Exception as e:
-                    st.error(f"Error initializing Ollama generator: {e}")
-                    st.info("Make sure Ollama is running: `ollama serve`")
+            if st.session_state.ollama_processor:
+                # Check health first
+                with st.spinner("Checking model availability..."):
+                    health = st.session_state.ollama_processor.check_ollama_health()
+                    
+                    if not health["connected"]:
+                        st.error(f"Cannot connect to Ollama: {health.get('error', 'Unknown error')}")
+                        st.info("Make sure Ollama is running: `ollama serve`")
+                    elif not health["model_available"]:
+                        st.warning(f"Model '{selected_model}' is not available.")
+                        st.info(f"Available models: {', '.join(health['available_models']) if health['available_models'] else 'None'}")
+                        if st.button(f"Pull Model '{selected_model}'", key="pull_on_init"):
+                            with st.spinner(f"Pulling model {selected_model}... This may take several minutes."):
+                                result = st.session_state.ollama_processor.pull_model(selected_model)
+                                if result["success"]:
+                                    st.success(result["message"])
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error: {result['error']}")
+                    else:
+                        # Model is available, initialize generator
+                        with st.spinner("Initializing generator (loading models)..."):
+                            try:
+                                st.session_state.article_generator = ArticleGenerator(
+                                    llm_model=selected_model
+                                )
+                                st.success("Ollama generator initialized successfully!")
+                            except Exception as e:
+                                st.error(f"Error initializing generator: {e}")
+            else:
+                st.error("Ollama processor not initialized")
         
         # Style learning section
         st.subheader("📚 Style Learning")
